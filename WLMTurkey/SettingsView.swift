@@ -5,6 +5,7 @@ struct SettingsView: View {
     @State private var cacheSize: String = "..."
     @State private var showClearConfirm = false
     @State private var monumentCount: Int = 0
+    @State private var dataVersion: String = ""
 
     var body: some View {
         @Bindable var settings = settings
@@ -127,12 +128,12 @@ struct SettingsView: View {
                 }
                 .font(.caption)
 
-                if let version = UserDefaults.standard.string(forKey: "monuments_remote_version") {
+                if !dataVersion.isEmpty {
                     HStack {
-                        Text(l.isTR ? "Veri sürümü" : "Data version")
+                        Text(l.isTR ? "Son güncelleme" : "Last updated")
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text(version)
+                        Text(formattedDataVersion)
                     }
                     .font(.caption)
                 }
@@ -190,7 +191,17 @@ struct SettingsView: View {
         .onAppear {
             calculateCacheSize()
             monumentCount = MonumentStore.load().count
+            dataVersion = MonumentStore.dataVersion() ?? ""
         }
+    }
+
+    private var formattedDataVersion: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let date = formatter.date(from: dataVersion) else { return dataVersion }
+        formatter.dateStyle = .long
+        formatter.locale = Locale(identifier: settings.language == "tr" ? "tr_TR" : "en_US")
+        return formatter.string(from: date)
     }
 
     private var appVersion: String {

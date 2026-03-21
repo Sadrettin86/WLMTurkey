@@ -28,6 +28,21 @@ struct MonumentStore {
         return monuments
     }
 
+    /// Read the version (date) from the active monuments JSON
+    static func dataVersion() -> String? {
+        let data: Data?
+        if let remoteData = try? Data(contentsOf: remoteFileURL) {
+            data = remoteData
+        } else if let url = Bundle.main.url(forResource: "monuments", withExtension: "json") {
+            data = try? Data(contentsOf: url)
+        } else {
+            data = nil
+        }
+        guard let data,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return json["version"] as? String
+    }
+
     /// Parse the compact JSON format
     private static func parse(data: Data) -> [Monument]? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
