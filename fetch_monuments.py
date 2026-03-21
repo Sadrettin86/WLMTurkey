@@ -80,7 +80,7 @@ def run_query(sparql: str, retries: int = 3) -> list:
     params = urllib.parse.urlencode({"query": sparql, "format": "json"})
     url = f"{SPARQL_ENDPOINT}?{params}"
     headers = {
-        "User-Agent": "WLMTurkeyBot/1.0 (https://github.com/AdemOzcan/WLMTurkey)",
+        "User-Agent": "WLMTurkeyBot/1.0 (https://github.com/Sadrettin86/WLMTurkey)",
         "Accept": "application/sparql-results+json",
     }
     req = urllib.request.Request(url, headers=headers)

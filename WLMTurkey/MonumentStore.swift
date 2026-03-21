@@ -61,7 +61,7 @@ struct MonumentStore {
             completion?([]); return
         }
 
-        guard let url = URL(string: "https://raw.githubusercontent.com/AdemOzcan/WLMTurkey/main/monuments.json") else {
+        guard let url = URL(string: "https://raw.githubusercontent.com/Sadrettin86/WLMTurkey/main/monuments.json") else {
             completion?([]); return
         }
 
