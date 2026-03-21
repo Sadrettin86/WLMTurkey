@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>VAS Türkiye</string>
+    <key>CFBundleName</key>
+    <string>VAS Türkiye</string>
+    <key>UILaunchScreen</key>
+    <dict>
+        <key>UIColorName</key>
+        <string>SystemBackgroundColor</string>
+    </dict>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Yakındaki kültür varlıklarını göstermek için konumunuz kullanılır.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
+</dict>
+</plist>
