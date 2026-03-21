@@ -1,0 +1,39 @@
+name: Update monument data
+
+on:
+  schedule:
+    # 1st of every month at 06:00 UTC
+    - cron: '0 6 1 * *'
+  workflow_dispatch: # Manual trigger via "Run workflow" button
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Fetch monuments from Wikidata
+        run: python3 fetch_monuments.py
+
+      - name: Check for changes
+        id: diff
+        run: |
+          git diff --quiet WLMTurkey/Resources/monuments.json && echo "changed=false" >> $GITHUB_OUTPUT || echo "changed=true" >> $GITHUB_OUTPUT
+
+      - name: Commit and push
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add WLMTurkey/Resources/monuments.json
+          git commit -m "Update monument data from Wikidata"
+          git push

@@ -8,10 +8,13 @@ import urllib.parse
 import urllib.error
 from datetime import date
 
+import os
+
 SPARQL_ENDPOINT = "https://query.wikidata.org/sparql"
 BATCH_SIZE = 5000
 MAX_OFFSET = 60000  # safety cap
-OUTPUT_PATH = "/Users/ademozcan/Desktop/WLMTurkey/WLMTurkey/Resources/monuments.json"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_PATH = os.path.join(SCRIPT_DIR, "WLMTurkey", "Resources", "monuments.json")
 
 SPARQL_TEMPLATE = """
 SELECT DISTINCT
