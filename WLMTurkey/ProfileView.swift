@@ -1,4 +1,5 @@
 import SwiftUI
+import AuthenticationServices
 
 struct ProfileView: View {
     @Environment(AppSettings.self) private var settings
@@ -9,12 +10,6 @@ struct ProfileView: View {
     @State private var withPhoto = 0
     @State private var withoutPhoto = 0
     @State private var showLogoutConfirm = false
-    @State private var showTokenInput = false
-    @State private var tokenConsumerKey = ""
-    @State private var tokenConsumerSecret = ""
-    @State private var tokenAccessToken = ""
-    @State private var tokenAccessSecret = ""
-    @State private var tokenError: String?
 
     var body: some View {
         let l = settings.l
@@ -107,16 +102,7 @@ struct ProfileView: View {
                         }
                         .padding(.vertical, 4)
 
-                        Button {
-                            showTokenInput = true
-                        } label: {
-                            HStack {
-                                Image(systemName: "arrow.right.circle.fill")
-                                    .foregroundStyle(.blue)
-                                Text(l.loginWithWikimedia)
-                                    .foregroundStyle(.primary)
-                            }
-                        }
+                        OAuthLoginButton()
                     }
                 }
 
@@ -265,113 +251,7 @@ struct ProfileView: View {
                     set: { if $0 { showOnboarding = false } }
                 ))
             }
-            .sheet(isPresented: $showTokenInput) {
-                tokenInputSheet
-            }
         }
-    }
-
-    // MARK: - Token Input Sheet
-    @ViewBuilder
-    private var tokenInputSheet: some View {
-        let l = settings.l
-        NavigationStack {
-            Form {
-                Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(l.isTR
-                             ? "Wikimedia Commons'a fotoğraf yükleyebilmek için OAuth tokenlarınızı girin."
-                             : "Enter your OAuth tokens to upload photos to Wikimedia Commons.")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-
-                        Link(destination: URL(string: "https://meta.wikimedia.org/wiki/Special:OAuthConsumerRegistration/propose")!) {
-                            HStack {
-                                Text(l.isTR ? "Token almak için tıklayın" : "Click to get tokens")
-                                    .font(.subheadline)
-                                Image(systemName: "arrow.up.right.square")
-                                    .font(.caption)
-                            }
-                        }
-                    }
-                }
-
-                Section("Consumer Token") {
-                    TextField("Consumer Key", text: $tokenConsumerKey)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    SecureField("Consumer Secret", text: $tokenConsumerSecret)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
-
-                Section("Access Token") {
-                    TextField("Access Token", text: $tokenAccessToken)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    SecureField("Access Secret", text: $tokenAccessSecret)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
-
-                if let error = tokenError {
-                    Section {
-                        Text(error)
-                            .foregroundStyle(.red)
-                            .font(.caption)
-                    }
-                }
-
-                Section {
-                    Button {
-                        saveTokens()
-                    } label: {
-                        HStack {
-                            Spacer()
-                            Text(l.isTR ? "Kaydet ve Giriş Yap" : "Save & Log In")
-                                .fontWeight(.semibold)
-                            Spacer()
-                        }
-                    }
-                    .disabled(tokenConsumerKey.isEmpty || tokenConsumerSecret.isEmpty || tokenAccessToken.isEmpty || tokenAccessSecret.isEmpty)
-                }
-            }
-            .navigationTitle(l.isTR ? "OAuth Giriş" : "OAuth Login")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(l.isTR ? "İptal" : "Cancel") {
-                        showTokenInput = false
-                    }
-                }
-            }
-        }
-    }
-
-    private func saveTokens() {
-        let ck = tokenConsumerKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cs = tokenConsumerSecret.trimmingCharacters(in: .whitespacesAndNewlines)
-        let at = tokenAccessToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        let as_ = tokenAccessSecret.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !ck.isEmpty, !cs.isEmpty, !at.isEmpty, !as_.isEmpty else {
-            tokenError = settings.l.isTR ? "Tüm alanları doldurun." : "Please fill in all fields."
-            return
-        }
-
-        WikimediaAuth.shared.storeTokens(
-            consumerKey: ck,
-            consumerSecret: cs,
-            accessToken: at,
-            accessSecret: as_
-        )
-
-        tokenError = nil
-        tokenConsumerKey = ""
-        tokenConsumerSecret = ""
-        tokenAccessToken = ""
-        tokenAccessSecret = ""
-        showTokenInput = false
     }
 
     private func aboutItem(icon: String, color: Color, title: String, text: String) -> some View {
@@ -430,5 +310,49 @@ struct ProfileView: View {
         formatter.numberStyle = .decimal
         formatter.groupingSeparator = "."
         return formatter.string(from: NSNumber(value: n)) ?? "\(n)"
+    }
+}
+
+// MARK: - OAuth Login Button
+struct OAuthLoginButton: View {
+    @Environment(AppSettings.self) private var settings
+
+    var body: some View {
+        Button {
+            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+               let window = windowScene.windows.first,
+               let rootVC = window.rootViewController {
+                let anchor = AuthAnchor(window: window)
+                WikimediaAuth.shared.login(from: anchor)
+            }
+        } label: {
+            HStack {
+                if WikimediaAuth.shared.isLoggingIn {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(settings.l.isTR ? "Giriş yapılıyor..." : "Logging in...")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Image(systemName: "arrow.right.circle.fill")
+                        .foregroundStyle(.blue)
+                    Text(settings.l.loginWithWikimedia)
+                        .foregroundStyle(.primary)
+                }
+            }
+        }
+        .disabled(WikimediaAuth.shared.isLoggingIn)
+    }
+}
+
+// MARK: - ASWebAuthenticationSession Anchor
+class AuthAnchor: NSObject, ASWebAuthenticationPresentationContextProviding {
+    let window: UIWindow
+
+    init(window: UIWindow) {
+        self.window = window
+    }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        window
     }
 }

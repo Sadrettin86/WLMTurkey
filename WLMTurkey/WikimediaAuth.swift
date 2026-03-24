@@ -2,6 +2,7 @@ import Foundation
 import CommonCrypto
 import Security
 import UIKit
+import AuthenticationServices
 
 // MARK: - Keychain Helper
 struct KeychainHelper {
@@ -42,152 +43,232 @@ struct KeychainHelper {
     }
 }
 
-// MARK: - OAuth 1.0a Signer
-struct OAuth1Signer {
-    let consumerKey: String
-    let consumerSecret: String
-    let accessToken: String
-    let accessSecret: String
+// MARK: - PKCE Helper
+struct PKCEHelper {
+    let codeVerifier: String
+    let codeChallenge: String
 
-    /// Sign a request with OAuth 1.0a HMAC-SHA1
-    func sign(request: inout URLRequest) {
-        guard let url = request.url else { return }
-        let method = request.httpMethod ?? "GET"
-        let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        let timestamp = String(Int(Date().timeIntervalSince1970))
+    init() {
+        // Generate a random 43-128 character code verifier
+        var buffer = [UInt8](repeating: 0, count: 32)
+        _ = SecRandomCopyBytes(kSecRandomDefault, buffer.count, &buffer)
+        codeVerifier = Data(buffer)
+            .base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
 
-        var oauthParams: [String: String] = [
-            "oauth_consumer_key": consumerKey,
-            "oauth_nonce": nonce,
-            "oauth_signature_method": "HMAC-SHA1",
-            "oauth_timestamp": timestamp,
-            "oauth_token": accessToken,
-            "oauth_version": "1.0",
-        ]
-
-        // Collect all parameters (OAuth + query + POST body form params)
-        var allParams = oauthParams
-        if let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems {
-            for item in queryItems {
-                allParams[item.name] = item.value ?? ""
-            }
+        // SHA256 hash of the verifier → base64url
+        let verifierData = codeVerifier.data(using: .ascii)!
+        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        verifierData.withUnsafeBytes { bytes in
+            _ = CC_SHA256(bytes.baseAddress, CC_LONG(verifierData.count), &hash)
         }
-        // For POST with application/x-www-form-urlencoded
-        if method == "POST",
-           let contentType = request.value(forHTTPHeaderField: "Content-Type"),
-           contentType.contains("application/x-www-form-urlencoded"),
-           let body = request.httpBody,
-           let bodyString = String(data: body, encoding: .utf8) {
-            let bodyParams = bodyString.components(separatedBy: "&")
-            for param in bodyParams {
-                let parts = param.components(separatedBy: "=")
-                if parts.count == 2 {
-                    allParams[parts[0].removingPercentEncoding ?? parts[0]] = parts[1].removingPercentEncoding ?? parts[1]
-                }
-            }
-        }
-
-        // Build base string
-        let baseURL = url.absoluteString.components(separatedBy: "?").first ?? url.absoluteString
-        let sortedParams = allParams.sorted { $0.key < $1.key }
-        let paramString = sortedParams.map { "\(percentEncode($0.key))=\(percentEncode($0.value))" }.joined(separator: "&")
-        let baseString = "\(method)&\(percentEncode(baseURL))&\(percentEncode(paramString))"
-
-        // Sign
-        let signingKey = "\(percentEncode(consumerSecret))&\(percentEncode(accessSecret))"
-        let signature = hmacSHA1(key: signingKey, data: baseString)
-        oauthParams["oauth_signature"] = signature
-
-        // Build Authorization header
-        let authHeader = "OAuth " + oauthParams.sorted { $0.key < $1.key }
-            .map { "\(percentEncode($0.key))=\"\(percentEncode($0.value))\"" }
-            .joined(separator: ", ")
-        request.setValue(authHeader, forHTTPHeaderField: "Authorization")
-    }
-
-    private func percentEncode(_ string: String) -> String {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
-        return string.addingPercentEncoding(withAllowedCharacters: allowed) ?? string
-    }
-
-    private func hmacSHA1(key: String, data: String) -> String {
-        let keyData = key.data(using: .utf8)!
-        let dataData = data.data(using: .utf8)!
-        var result = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
-        keyData.withUnsafeBytes { keyBytes in
-            dataData.withUnsafeBytes { dataBytes in
-                CCHmac(CCHmacAlgorithm(kCCHmacAlgSHA1),
-                        keyBytes.baseAddress, keyData.count,
-                        dataBytes.baseAddress, dataData.count,
-                        &result)
-            }
-        }
-        return Data(result).base64EncodedString()
+        codeChallenge = Data(hash)
+            .base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 }
 
-// MARK: - Wikimedia Auth Manager
+// MARK: - Wikimedia Auth Manager (OAuth 2.0)
 @Observable
 class WikimediaAuth {
     static let shared = WikimediaAuth()
 
+    // OAuth 2.0 client ID (public, non-confidential — no secret needed)
+    static let clientID = "0800eac6605bda2d9b15cba80a00ba9c"
+    static let redirectURI = "https://sadrettin86.github.io/WLMTurkey/oauth-callback"
+    static let authorizeURL = "https://meta.wikimedia.org/w/rest.php/oauth2/authorize"
+    static let tokenURL = "https://meta.wikimedia.org/w/rest.php/oauth2/access_token"
+
     var isLoggedIn: Bool { accessToken != nil }
     var username: String?
+    var isLoggingIn = false
 
-    private var consumerKey: String?
-    private var consumerSecret: String?
     private var accessToken: String?
-    private var accessSecret: String?
+    private var refreshToken: String?
+    private var pkce: PKCEHelper?
+    private var authSession: ASWebAuthenticationSession?
 
     private init() {
-        consumerKey = KeychainHelper.load(key: "oauth_consumer_key")
-        consumerSecret = KeychainHelper.load(key: "oauth_consumer_secret")
-        accessToken = KeychainHelper.load(key: "oauth_access_token")
-        accessSecret = KeychainHelper.load(key: "oauth_access_secret")
+        accessToken = KeychainHelper.load(key: "oauth2_access_token")
+        refreshToken = KeychainHelper.load(key: "oauth2_refresh_token")
         username = UserDefaults.standard.string(forKey: "oauth_username")
     }
 
-    /// Store OAuth tokens (called after registration)
-    func storeTokens(consumerKey: String, consumerSecret: String, accessToken: String, accessSecret: String) {
-        self.consumerKey = consumerKey
-        self.consumerSecret = consumerSecret
-        self.accessToken = accessToken
-        self.accessSecret = accessSecret
+    // MARK: - Login Flow
 
-        KeychainHelper.save(key: "oauth_consumer_key", value: consumerKey)
-        KeychainHelper.save(key: "oauth_consumer_secret", value: consumerSecret)
-        KeychainHelper.save(key: "oauth_access_token", value: accessToken)
-        KeychainHelper.save(key: "oauth_access_secret", value: accessSecret)
+    /// Start OAuth 2.0 + PKCE login flow
+    func login(from anchor: ASWebAuthenticationPresentationContextProviding) {
+        isLoggingIn = true
+        let pkce = PKCEHelper()
+        self.pkce = pkce
 
-        fetchUsername()
+        var components = URLComponents(string: Self.authorizeURL)!
+        components.queryItems = [
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "client_id", value: Self.clientID),
+            URLQueryItem(name: "redirect_uri", value: Self.redirectURI),
+            URLQueryItem(name: "code_challenge", value: pkce.codeChallenge),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+        ]
+
+        guard let authURL = components.url else {
+            isLoggingIn = false
+            return
+        }
+
+        // ASWebAuthenticationSession handles the browser → callback flow
+        let session = ASWebAuthenticationSession(
+            url: authURL,
+            callbackURLScheme: "wlmturkey"
+        ) { [weak self] callbackURL, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let error = error {
+                    print("OAuth login error: \(error.localizedDescription)")
+                    self.isLoggingIn = false
+                    return
+                }
+                guard let callbackURL = callbackURL,
+                      let code = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?
+                        .queryItems?.first(where: { $0.name == "code" })?.value else {
+                    self.isLoggingIn = false
+                    return
+                }
+                self.exchangeCodeForToken(code: code)
+            }
+        }
+        session.presentationContextProvider = anchor
+        session.prefersEphemeralWebBrowserSession = false
+        self.authSession = session
+        session.start()
+    }
+
+    /// Exchange authorization code for access token
+    private func exchangeCodeForToken(code: String) {
+        guard let pkce = pkce else {
+            isLoggingIn = false
+            return
+        }
+
+        let url = URL(string: Self.tokenURL)!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("WLMTurkey/1.0", forHTTPHeaderField: "User-Agent")
+
+        let params = [
+            "grant_type=authorization_code",
+            "code=\(percentEncode(code))",
+            "client_id=\(percentEncode(Self.clientID))",
+            "redirect_uri=\(percentEncode(Self.redirectURI))",
+            "code_verifier=\(percentEncode(pkce.codeVerifier))",
+        ].joined(separator: "&")
+
+        request.httpBody = params.data(using: .utf8)
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.pkce = nil
+
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let accessToken = json["access_token"] as? String else {
+                    print("Token exchange failed")
+                    if let data = data, let body = String(data: data, encoding: .utf8) {
+                        print("Response: \(body)")
+                    }
+                    self.isLoggingIn = false
+                    return
+                }
+
+                self.accessToken = accessToken
+                KeychainHelper.save(key: "oauth2_access_token", value: accessToken)
+
+                if let refreshToken = json["refresh_token"] as? String {
+                    self.refreshToken = refreshToken
+                    KeychainHelper.save(key: "oauth2_refresh_token", value: refreshToken)
+                }
+
+                self.isLoggingIn = false
+                self.fetchUsername()
+            }
+        }.resume()
+    }
+
+    /// Refresh access token using refresh token
+    func refreshAccessToken(completion: @escaping (Bool) -> Void) {
+        guard let refreshToken = refreshToken else {
+            completion(false)
+            return
+        }
+
+        let url = URL(string: Self.tokenURL)!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("WLMTurkey/1.0", forHTTPHeaderField: "User-Agent")
+
+        let params = [
+            "grant_type=refresh_token",
+            "refresh_token=\(percentEncode(refreshToken))",
+            "client_id=\(percentEncode(Self.clientID))",
+        ].joined(separator: "&")
+
+        request.httpBody = params.data(using: .utf8)
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+            DispatchQueue.main.async {
+                guard let self = self else {
+                    completion(false)
+                    return
+                }
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let newAccessToken = json["access_token"] as? String else {
+                    completion(false)
+                    return
+                }
+
+                self.accessToken = newAccessToken
+                KeychainHelper.save(key: "oauth2_access_token", value: newAccessToken)
+
+                if let newRefreshToken = json["refresh_token"] as? String {
+                    self.refreshToken = newRefreshToken
+                    KeychainHelper.save(key: "oauth2_refresh_token", value: newRefreshToken)
+                }
+
+                completion(true)
+            }
+        }.resume()
     }
 
     /// Logout — clear all tokens
     func logout() {
-        consumerKey = nil
-        consumerSecret = nil
         accessToken = nil
-        accessSecret = nil
+        refreshToken = nil
         username = nil
 
-        KeychainHelper.delete(key: "oauth_consumer_key")
-        KeychainHelper.delete(key: "oauth_consumer_secret")
-        KeychainHelper.delete(key: "oauth_access_token")
-        KeychainHelper.delete(key: "oauth_access_secret")
+        KeychainHelper.delete(key: "oauth2_access_token")
+        KeychainHelper.delete(key: "oauth2_refresh_token")
         UserDefaults.standard.removeObject(forKey: "oauth_username")
     }
 
-    /// Get a configured OAuth signer
-    private var signer: OAuth1Signer? {
-        guard let ck = consumerKey, let cs = consumerSecret,
-              let at = accessToken, let as_ = accessSecret else { return nil }
-        return OAuth1Signer(consumerKey: ck, consumerSecret: cs, accessToken: at, accessSecret: as_)
+    // MARK: - Authenticated Requests
+
+    /// Add Bearer token to a request
+    private func authorize(request: inout URLRequest) {
+        guard let token = accessToken else { return }
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     }
 
     // MARK: - Fetch Username
     func fetchUsername() {
-        guard let signer = signer else { return }
+        guard accessToken != nil else { return }
 
         var components = URLComponents(string: "https://commons.wikimedia.org/w/api.php")!
         components.queryItems = [
@@ -200,8 +281,8 @@ class WikimediaAuth {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.setValue("VASturkiye/1.0", forHTTPHeaderField: "User-Agent")
-        signer.sign(request: &request)
+        request.setValue("WLMTurkey/1.0", forHTTPHeaderField: "User-Agent")
+        authorize(request: &request)
 
         URLSession.shared.dataTask(with: request) { data, _, error in
             DispatchQueue.main.async {
@@ -216,50 +297,14 @@ class WikimediaAuth {
         }.resume()
     }
 
-    // MARK: - Upload File to Commons
+    // MARK: - CSRF Token
 
-    /// Upload a photo to Wikimedia Commons
-    /// - Parameters:
-    ///   - imageData: JPEG data of the image
-    ///   - fileName: Target filename on Commons
-    ///   - wikitext: Full wikitext (description, license, categories)
-    ///   - comment: Upload comment
-    ///   - completion: Result with filename or error
-    func uploadFile(
-        imageData: Data,
-        fileName: String,
-        wikitext: String,
-        comment: String,
-        onProgress: @escaping (Double) -> Void,
-        completion: @escaping (Result<String, Error>) -> Void
-    ) {
-        guard let signer = signer else {
+    private func fetchCSRFToken(site: String = "https://commons.wikimedia.org", completion: @escaping (Result<String, Error>) -> Void) {
+        guard accessToken != nil else {
             completion(.failure(AuthError.notLoggedIn))
             return
         }
 
-        // Step 1: Get CSRF token
-        fetchCSRFToken(signer: signer) { result in
-            switch result {
-            case .failure(let error):
-                completion(.failure(error))
-            case .success(let csrfToken):
-                // Step 2: Upload with token
-                self.performUpload(
-                    signer: signer,
-                    csrfToken: csrfToken,
-                    imageData: imageData,
-                    fileName: fileName,
-                    wikitext: wikitext,
-                    comment: comment,
-                    onProgress: onProgress,
-                    completion: completion
-                )
-            }
-        }
-    }
-
-    private func fetchCSRFToken(signer: OAuth1Signer, site: String = "https://commons.wikimedia.org", completion: @escaping (Result<String, Error>) -> Void) {
         var components = URLComponents(string: "\(site)/w/api.php")!
         components.queryItems = [
             URLQueryItem(name: "action", value: "query"),
@@ -274,8 +319,8 @@ class WikimediaAuth {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.setValue("VASturkiye/1.0", forHTTPHeaderField: "User-Agent")
-        signer.sign(request: &request)
+        request.setValue("WLMTurkey/1.0", forHTTPHeaderField: "User-Agent")
+        authorize(request: &request)
 
         URLSession.shared.dataTask(with: request) { data, _, error in
             if let error = error {
@@ -294,8 +339,40 @@ class WikimediaAuth {
         }.resume()
     }
 
+    // MARK: - Upload File to Commons
+
+    func uploadFile(
+        imageData: Data,
+        fileName: String,
+        wikitext: String,
+        comment: String,
+        onProgress: @escaping (Double) -> Void,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        guard accessToken != nil else {
+            completion(.failure(AuthError.notLoggedIn))
+            return
+        }
+
+        fetchCSRFToken { result in
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let csrfToken):
+                self.performUpload(
+                    csrfToken: csrfToken,
+                    imageData: imageData,
+                    fileName: fileName,
+                    wikitext: wikitext,
+                    comment: comment,
+                    onProgress: onProgress,
+                    completion: completion
+                )
+            }
+        }
+    }
+
     private func performUpload(
-        signer: OAuth1Signer,
         csrfToken: String,
         imageData: Data,
         fileName: String,
@@ -310,8 +387,9 @@ class WikimediaAuth {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.setValue("VASturkiye/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("WLMTurkey/1.0", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 120
+        authorize(request: &request)
 
         // Build multipart body
         var body = Data()
@@ -342,11 +420,6 @@ class WikimediaAuth {
 
         request.httpBody = body
 
-        // Sign (OAuth header only, not the multipart body)
-        // For multipart, we sign without body params
-        signer.sign(request: &request)
-
-        // Use URLSession delegate for progress
         let session = URLSession(configuration: .default, delegate: UploadProgressDelegate(onProgress: onProgress), delegateQueue: nil)
         session.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
@@ -383,32 +456,30 @@ class WikimediaAuth {
     }
 
     // MARK: - Set Wikidata Claim (P18)
-    /// Sets a string claim on a Wikidata entity (e.g. P18 image filename)
+
     func setWikidataClaim(
         entityId: String,
         property: String,
         value: String,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        guard let signer = signer else {
+        guard accessToken != nil else {
             completion(.failure(AuthError.notLoggedIn))
             return
         }
 
-        // Step 1: Get CSRF token from Wikidata (same OAuth tokens work across all Wikimedia sites)
-        fetchCSRFToken(signer: signer, site: "https://www.wikidata.org") { result in
+        fetchCSRFToken(site: "https://www.wikidata.org") { result in
             switch result {
             case .failure(let error):
                 completion(.failure(error))
             case .success(let csrfToken):
-                // Step 2: Use wbcreateclaim to add a new claim
-                // Use multipart/form-data so OAuth signer doesn't include body params in signature
                 let boundary = "Boundary-\(UUID().uuidString)"
                 let url = URL(string: "https://www.wikidata.org/w/api.php")!
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
                 request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-                request.setValue("VASturkiye/1.0", forHTTPHeaderField: "User-Agent")
+                request.setValue("WLMTurkey/1.0", forHTTPHeaderField: "User-Agent")
+                self.authorize(request: &request)
 
                 let fields: [(String, String)] = [
                     ("action", "wbcreateclaim"),
@@ -430,8 +501,6 @@ class WikimediaAuth {
                 }
                 body.append("--\(boundary)--\r\n".data(using: .utf8)!)
                 request.httpBody = body
-
-                signer.sign(request: &request)
 
                 URLSession.shared.dataTask(with: request) { data, _, error in
                     DispatchQueue.main.async {
@@ -457,6 +526,14 @@ class WikimediaAuth {
                 }.resume()
             }
         }
+    }
+
+    // MARK: - Helpers
+
+    private func percentEncode(_ string: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return string.addingPercentEncoding(withAllowedCharacters: allowed) ?? string
     }
 
     // MARK: - Errors

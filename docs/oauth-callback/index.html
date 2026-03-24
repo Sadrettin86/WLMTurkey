@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WLM Turkey - Redirecting...</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            text-align: center;
+            padding: 2rem;
+        }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #ddd;
+            border-top-color: #007AFF;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 1rem;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .fallback {
+            display: none;
+            margin-top: 1rem;
+        }
+        .fallback a {
+            color: #007AFF;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="spinner"></div>
+        <p>Uygulamaya yönlendiriliyorsunuz...</p>
+        <p style="font-size: 0.85rem; color: #888;">Redirecting to the app...</p>
+        <div class="fallback" id="fallback">
+            <p>Otomatik yönlendirme çalışmadıysa:</p>
+            <a id="manualLink" href="#">Uygulamayı aç</a>
+        </div>
+    </div>
+    <script>
+        // Get the full query string from the current URL
+        var params = window.location.search;
+        // Build the custom scheme URL
+        var appURL = 'wlmturkey://oauth-callback' + params;
+        // Try to redirect
+        window.location.href = appURL;
+        // Show fallback link after 2 seconds
+        setTimeout(function() {
+            document.getElementById('fallback').style.display = 'block';
+            document.getElementById('manualLink').href = appURL;
+        }, 2000);
+    </script>
+</body>
+</html>

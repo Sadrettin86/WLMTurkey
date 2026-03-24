@@ -13,6 +13,17 @@
     </dict>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Yakındaki kültür varlıklarını göstermek için konumunuz kullanılır.</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>wlmturkey</string>
+            </array>
+            <key>CFBundleURLName</key>
+            <string>com.vasturkiye.oauth</string>
+        </dict>
+    </array>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>
